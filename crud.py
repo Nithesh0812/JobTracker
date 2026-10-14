@@ -125,7 +125,7 @@ def get_jobs_by_user(db:Session,user_id:int,status:schemas.JobStatus |None = Non
     if sort_column is None:
         raise HTTPException(
             status_code=400,
-            detail="Sort column is required"
+            detail="Invalid sort column"
         )
     if order.lower() == "desc":
         query=query.order_by(sort_column.desc())
