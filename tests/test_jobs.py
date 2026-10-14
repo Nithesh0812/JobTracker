@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -52,7 +54,49 @@ def test_user(client):
     assert response.status_code == 201
 
     return user_data
-    
+
+def auth_headers(client,email):
+    register_response = client.post(
+        "/auth/register",
+        json={
+            "full_name": "Test User",
+            "email": email,
+            "password": "testpassword123"
+        }
+    )
+
+    assert register_response.status_code == 201
+
+    login_response = client.post(
+        "/auth/login",
+        json={
+            "email": email,
+            "password": "testpassword123"
+        }
+    )
+
+    assert login_response.status_code == 200
+
+    data = login_response.json()
+    access_token = data["access_token"]
+
+    return {"Authorization": f"Bearer {access_token}"}
+
+def create_job(client, headers, **overrides):
+    job_data = {
+        "company": "Test Company",
+        "role": "Test Role",
+        "status": "Applied",
+        "job_link": "https://example.com/job",
+        "notes": "Test notes"
+    }
+    job_data.update(overrides)
+    response = client.post(
+        "/jobs",
+        headers=headers,
+        json=job_data
+    )
+    return response
 
 def test_root(client):
     response = client.get("/")
@@ -96,3 +140,48 @@ def test_login_returns_access_token(client, test_user):
 
     assert "access_token" in data
     assert data["token_type"] == "bearer"
+
+def test_jobs_require_auth(client):
+    response = client.get("/jobs")
+    assert response.status_code == 401
+
+def test_create_and_get_job(client):
+    headers =auth_headers(client,"testuser@example.com")
+    create_response = create_job(client, headers)
+
+    assert create_response.status_code == 201
+    created_job = create_response.json()
+    assert created_job["company"] == "Test Company"
+    assert created_job["role"] == "Test Role"
+    assert created_job["status"] == "Applied"
+
+    job_id = created_job["id"]
+    get_response = client.get(f"/jobs/{job_id}", headers=headers)
+    assert get_response.status_code == 200
+    retrieved_job = get_response.json()
+    assert retrieved_job["company"] == "Test Company"
+    assert retrieved_job["role"] == "Test Role"
+    assert retrieved_job["status"] == "Applied"
+
+def test_list_jobs_with_defaults(client):
+    headers =auth_headers(client,"testuser@example.com")
+    create_response=create_job(client,headers)
+
+    assert create_response.status_code==201
+
+    created=create_response.json()
+
+    assert created["company"]=="Test Company"
+    assert created["role"]=="Test Role" 
+    assert created["status"]=="Applied"
+
+    job_id=created["id"]
+    list_response=client.get(f"/jobs",headers=headers)
+
+    assert list_response.status_code==200
+
+    jobs=list_response.json()
+    assert len(jobs)==1
+    assert jobs[0]["company"]=="Test Company"
+    assert jobs[0]["role"]=="Test Role"
+    assert jobs[0]["status"]=="Applied"
