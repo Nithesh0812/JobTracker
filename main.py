@@ -59,7 +59,7 @@ def create_job_for_user(job:schemas.JobApplicationCreate,db:Session=Depends(get_
     return crud.create_job_applications(db,job,current_user.id)
 
 @app.get("/jobs",response_model=list[schemas.JobApplicationResponse])
-def get_jobs_for_user(sort_by:str,order:str,skip:int=Query(default=0,ge=0),limit:int=Query(default=10,le=20),status:schemas.JobStatus |None=None,company:str |None=None,role:str |None=None,db:Session=Depends(get_db),current_user=Depends(get_current_user)):
+def get_jobs_for_user(sort_by:str ="id",order:str ="asc",skip:int=Query(default=0,ge=0),limit:int=Query(default=10,ge=1,le=20),status:schemas.JobStatus |None=None,company:str |None=None,role:str |None=None,db:Session=Depends(get_db),current_user=Depends(get_current_user)):
     return crud.get_jobs_by_user(sort_by=sort_by,order=order,db=db,user_id=current_user.id,status=status,company=company,role=role,skip=skip,limit=limit)
 
 @app.get("/jobs/{job_id}",response_model=schemas.JobApplicationResponse)
