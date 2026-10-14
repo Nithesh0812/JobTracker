@@ -175,7 +175,6 @@ def test_list_jobs_with_defaults(client):
     assert created["role"]=="Test Role" 
     assert created["status"]=="Applied"
 
-    job_id=created["id"]
     list_response=client.get(f"/jobs",headers=headers)
 
     assert list_response.status_code==200
@@ -185,3 +184,60 @@ def test_list_jobs_with_defaults(client):
     assert jobs[0]["company"]=="Test Company"
     assert jobs[0]["role"]=="Test Role"
     assert jobs[0]["status"]=="Applied"
+
+def test_filter_jobs_by_status(client):
+    headers= auth_headers(client,"testuser@example.com")
+    first_job = create_job(client,headers=headers,status="Applied")
+    second_job = create_job(client,headers=headers,status="Interview")
+
+    assert first_job.status_code == 201
+    assert second_job.status_code == 201
+
+    first_response =client.get("/jobs",headers=headers,params={"status":"Applied"})
+    assert first_response.status_code == 200
+
+    jobs=first_response.json()
+    assert len(jobs)==1
+    assert jobs[0]["status"]=="Applied"
+
+    second_response=client.get("/jobs",headers=headers,params={"status":"Interview"})
+    assert second_response.status_code==200
+
+    jobs=second_response.json()
+    assert len(jobs)==1
+    assert jobs[0]["status"]=="Interview"
+
+def test_invalid_sort_column(client):
+    headers = auth_headers(client,"testuser@example.com")
+
+    response=client.get("/jobs",headers=headers,params={"sort_by":"password"})
+
+    assert response.status_code == 400
+
+    assert response.json()["detail"]=="Invalid sort column"
+
+def test_update_job_status(client):
+    headers=auth_headers(client,"testuser@example.com")
+    create_response = create_job(client,headers=headers)
+
+    assert create_response.status_code == 201
+
+    job_id = create_response.json()["id"]
+    update_job_response = client.patch(f"/jobs/{job_id}",headers=headers,json = {"status":"Interview"})
+
+    assert update_job_response.status_code == 200
+
+    assert update_job_response.json()["status"] == "Interview"
+
+def test_delete_job(client):
+    headers=auth_headers(client,"testuser@example.com")
+    create_response= create_job(client,headers=headers)
+
+    assert create_response.status_code == 201
+
+    job_id =create_response.json()["id"]
+    delete_response=client.delete(f"/jobs/{job_id}",headers=headers)
+    assert delete_response.status_code == 200
+
+    get_response=client.get(f"/jobs/{job_id}",headers=headers)
+    assert get_response.status_code == 404
