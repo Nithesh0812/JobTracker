@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 *.db
 .pytest_cache/
+jobtracker.db.bak

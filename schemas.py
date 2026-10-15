@@ -1,11 +1,11 @@
 from typing import Optional
-from pydantic import BaseModel,ConfigDict
+from pydantic import BaseModel,ConfigDict,EmailStr,Field
 from enum import Enum
 from datetime import datetime
 class UserCreate(BaseModel):
     full_name:str
-    email:str
-    password:str
+    email:EmailStr
+    password:str = Field(min_length=8,max_length=128)
 
 class UserResponse(BaseModel):
     id:int
@@ -14,12 +14,8 @@ class UserResponse(BaseModel):
     model_config=ConfigDict(from_attributes=True)
     
 class UserLogin(BaseModel):
-    email:str
+    email:EmailStr
     password:str
-
-class UserLoginResponse(BaseModel):
-    message:str
-    user_id:int
 
 class JobStatus(str,Enum):
     applied="Applied"
