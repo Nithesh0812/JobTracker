@@ -241,3 +241,30 @@ def test_delete_job(client):
 
     get_response=client.get(f"/jobs/{job_id}",headers=headers)
     assert get_response.status_code == 404
+
+def test_users_cannot_access_other_users_jobs(client):
+    headers_user1 = auth_headers(client,"testuser1@example.com")
+    headers_user2 = auth_headers(client,"testuser2@example.com")
+
+    create_response_user1 = create_job(client,headers=headers_user1)
+    assert create_response_user1.status_code == 201
+
+    job_id_user1 = create_response_user1.json()["id"]
+
+    # User 2 tries to access User 1's job
+    read_response=client.get(f"/jobs/{job_id_user1}",headers=headers_user2)
+    assert read_response.status_code == 404
+
+    update_response = client.patch(f"/jobs/{job_id_user1}",headers=headers_user2,json={"notes":"hacked"})
+    assert update_response.status_code == 404
+
+    delete_response =client.delete(f"/jobs/{job_id_user1}",headers=headers_user2)
+    assert delete_response.status_code == 404
+
+    get_response_user2=client.get(f"/jobs",headers=headers_user2)
+    assert get_response_user2.status_code == 200
+    assert get_response_user2.json() == []
+
+    get_response_user1 = client.get(f"/jobs/{job_id_user1}",headers=headers_user1)
+    assert get_response_user1.status_code == 200
+    assert get_response_user1.json()["notes"] == "Test notes"
