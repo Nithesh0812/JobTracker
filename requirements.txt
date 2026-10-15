@@ -9,3 +9,4 @@ SQLAlchemy==2.0.51
 uvicorn==0.49.0
 dnspython==2.9.0
 email-validator==2.3.0
+psycopg2-binary==2.9.13
