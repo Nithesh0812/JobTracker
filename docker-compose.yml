@@ -10,5 +10,14 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://nithesh08:Nithesh08@db:5432/jobtracker
+      SECRET_KEY: ${SECRET_KEY}
+    depends_on:
+      - db
 volumes:
   pgdata:
