@@ -21,18 +21,6 @@ def create_user(db:Session,user:schemas.UserCreate):
             status_code=400,
             detail="Email already exists"
         )
-def delete_user(db:Session,user_id:int):
-    user=db.query(models.User).filter(models.User.id==user_id).first()
-    if user is None:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found"
-        )
-    db.delete(user)
-    db.commit()
-    return {"message":"User deleted successfully"}
-def get_users(db:Session):
-    return db.query(models.User).all()
 
 def get_user_by_id(db:Session,user_id:int):
     user=db.query(models.User).filter(models.User.id==user_id).first()
@@ -93,15 +81,11 @@ def delete_job_application(db:Session,job_id:int,user_id:int):
     db.commit()
     return {"message":"Job deleted successfully"}
 
-def get_job_application(db:Session):
-    return db.query(models.JobApplication).all()
-
-
 def get_job_by_id_for_user(db:Session,job_id:int,user_id:int):
     job=db.query(models.JobApplication).filter(models.JobApplication.id == job_id, models.JobApplication.user_id == user_id).first()
     return job
 
-def get_jobs_by_user(db:Session,user_id:int,status:schemas.JobStatus |None = None,company:str |None = None,role:str |None = None,skip:int=0,limit:int=0,sort_by:str="id",order:str="asc"):
+def get_jobs_by_user(db:Session,user_id:int,status:schemas.JobStatus |None = None,company:str |None = None,role:str |None = None,skip:int=0,limit:int=10,sort_by:str="id",order:str="asc"):
 
     get_user_by_id(db,user_id)
     
