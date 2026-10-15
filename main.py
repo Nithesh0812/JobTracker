@@ -3,7 +3,7 @@ from fastapi.security import HTTPAuthorizationCredentials,HTTPBearer
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from fastapi import Query
-import schemas,crud
+import models,schemas,crud
 from security import verify_password,create_access_token,decode_access_token
 
 app = FastAPI()
@@ -23,7 +23,7 @@ def get_current_user(credentials:HTTPAuthorizationCredentials=Depends(bearer_sch
             status_code=401,
             detail="Invalid or expired Token"
         )
-    user=crud.get_user_by_id(db,user_id)
+    user=db.get(models.User,user_id)
     if user is None:
         raise HTTPException(
             status_code=401,

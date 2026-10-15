@@ -10,6 +10,8 @@ from main import app,get_db
 
 import pytest
 
+from models import User
+
 TEST_DATABASE_URL="sqlite://"
 
 engine=create_engine(
@@ -268,3 +270,15 @@ def test_users_cannot_access_other_users_jobs(client):
     get_response_user1 = client.get(f"/jobs/{job_id_user1}",headers=headers_user1)
     assert get_response_user1.status_code == 200
     assert get_response_user1.json()["notes"] == "Test notes"
+
+def test_token_for_deleted_user_is_rejected(client):
+    headers = auth_headers(client,"testuser1@example.com")
+
+    db=TestingSessionLocal()
+    user=db.query(User).filter(User.email =="testuser1@example.com").first()
+    db.delete(user)
+    db.commit()
+    db.close()
+
+    response= client.get("/auth/me",headers=headers)
+    assert response.status_code == 401
