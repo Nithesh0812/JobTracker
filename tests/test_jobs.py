@@ -82,6 +82,11 @@ def auth_headers(client,email):
 
     return {"Authorization": f"Bearer {access_token}"}
 
+def test_health_check(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "healthy"}
+
 def test_register_rejects_invalid_email(client):
     response=client.post("/auth/register", json={
         "full_name": "Test User",

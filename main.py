@@ -5,7 +5,7 @@ from database import SessionLocal
 from fastapi import Query
 import models,schemas,crud
 from security import verify_password,create_access_token,decode_access_token
-
+from sqlalchemy import text
 app = FastAPI()
 bearer_scheme=HTTPBearer()
 def get_db():
@@ -31,6 +31,16 @@ def get_current_user(credentials:HTTPAuthorizationCredentials=Depends(bearer_sch
         )
     return user
 
+@app.get("/health")
+def health_check(db:Session=Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status":"healthy"}
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable"
+        )
 @app.get("/auth/me",response_model=schemas.UserResponse)
 def get_me(current_user=Depends(get_current_user)):
     return current_user
