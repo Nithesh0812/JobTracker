@@ -4,6 +4,21 @@
 
 A REST API for tracking job applications, with JWT authentication and per-user data isolation. Built with FastAPI, SQLAlchemy, and Alembic, and runs on PostgreSQL in Docker.
 
+## Live demo
+
+Interactive API docs: **http://34.195.14.161:8000/docs**
+
+To try it:
+
+1. Open `POST /auth/register`, click **Try it out**, enter an email and a password (8 to 128 characters), and click **Execute**.
+2. Open `POST /auth/login` and log in. Copy the `access_token` from the response.
+3. Click **Authorize** at the top of the page and paste the token.
+4. Create, list, filter, update, and delete job applications. You only see your own jobs.
+
+The demo runs over plain HTTP, so use a throwaway email and password, not one you use elsewhere. It is hosted on a small AWS instance and may be offline at times.
+
+Health check: http://34.195.14.161:8000/health
+
 ## Features
 
 - Register and log in with JWT bearer tokens; passwords are hashed with Argon2 (via `pwdlib`)
@@ -18,7 +33,7 @@ A REST API for tracking job applications, with JWT authentication and per-user d
 
 ## Tech stack
 
-Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL, Docker, Docker Compose, Pydantic, pytest, GitHub Actions
+Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL, Docker, Docker Compose, Pydantic, pytest, GitHub Actions, AWS EC2
 
 ## Run with Docker (recommended)
 
@@ -67,8 +82,7 @@ git clone https://github.com/Nithesh0812/JobTracker.git
 cd JobTracker
 
 python -m venv venv
-# Windows (PowerShell):  venv\Scripts\activate
-# macOS / Linux / Git Bash:  source venv/bin/activate
+
 
 pip install -r requirements.txt
 ```
@@ -97,3 +111,14 @@ pytest -q
 The tests run against a separate in-memory database and never touch your real data. They cover registration and login, input validation, job CRUD, filtering, sorting, pagination defaults, the health check, and authorization (including a test that one user cannot read, edit, or delete another user's job, and that a token for a deleted user is rejected).
 
 GitHub Actions runs the tests on every push, then applies all migrations to a fresh PostgreSQL database and checks that the models and migrations agree (`alembic check`).
+
+## Deployment
+
+The live demo runs on an AWS EC2 instance using the same Docker Compose setup described above:
+
+- The API and PostgreSQL run as two containers; the database data lives in a named Docker volume, so it survives container recreation.
+- Only the API port (8000) is published. PostgreSQL is reachable only from inside the Docker network.
+- Both services use `restart: unless-stopped`, so they come back after a crash or a server reboot.
+- Secrets (`SECRET_KEY` and the database credentials) are read from a `.env` file on the server and are not committed to the repository.
+- An Elastic IP keeps the address stable across instance restarts.
+
