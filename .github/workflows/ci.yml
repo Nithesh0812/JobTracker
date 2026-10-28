@@ -25,8 +25,8 @@ jobs:
           --health-retries 5
 
     env:
-      SECRET_KEY: ci-test-secret
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/jobtracker_test
+      SECRET_KEY: continuous-integration-test-secret
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/jobtracker_test
 
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +35,17 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: pytest -q
-      - run: alembic upgrade head
-      - run: alembic check
+      - name: Tests on Postgres SQL
+        run: pytest -q
+      - name: Tests on SQLite
+        run : pytest -q
+        env:
+          DATABASE_URL: "sqlite://"
+      - name: Migrating to a test database
+        env:
+          PGPASSWORD: postgres
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/jobtracker_migrations
+        run: |
+          psql -h localhost -U postgres -c "CREATE DATABASE jobtracker_migrations"
+          alembic upgrade head
+          alembic check
