@@ -14,12 +14,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    profiles: ["https"]
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
   api:
     build: .
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       SECRET_KEY: ${SECRET_KEY}
@@ -28,3 +38,4 @@ services:
         condition: service_healthy
 volumes:
   pgdata:
+  caddy_data:
