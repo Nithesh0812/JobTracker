@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends,HTTPException
+from fastapi import FastAPI, Depends,HTTPException,Response
 from fastapi.security import HTTPAuthorizationCredentials,HTTPBearer
 from sqlalchemy.orm import Session
 from database import SessionLocal
@@ -79,7 +79,7 @@ def get_jobs_by_id(job_id:int,db:Session=Depends(get_db),current_user=Depends(ge
     if job is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Job does not exist for user_id: {current_user.id} "
+            detail=f"Job not found"
         )
     return job
 
@@ -89,5 +89,5 @@ def job_update(job_id:int,job_update:schemas.JobApplicationUpdate,db:Session=Dep
 
 @app.delete("/jobs/{job_id}")
 def job_delete(job_id:int,db:Session=Depends(get_db),current_user=Depends(get_current_user)):
-    return crud.delete_job_application(db,job_id=job_id,user_id=current_user.id)
-    
+    crud.delete_job_application(db,job_id=job_id,user_id=current_user.id)
+    return Response(status_code=204)

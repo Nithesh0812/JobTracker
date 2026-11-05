@@ -262,7 +262,8 @@ def test_delete_job(client):
 
     job_id =create_response.json()["id"]
     delete_response=client.delete(f"/jobs/{job_id}",headers=headers)
-    assert delete_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert delete_response.content == b""
 
     get_response=client.get(f"/jobs/{job_id}",headers=headers)
     assert get_response.status_code == 404
@@ -305,3 +306,10 @@ def test_token_for_deleted_user_is_rejected(client):
 
     response= client.get("/auth/me",headers=headers)
     assert response.status_code == 401
+
+def test_not_found_does_not_leak_user_info(client):
+    headers = auth_headers(client,"testuser1@example.com")
+    response = client.get("/jobs/9999",headers=headers)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Job not found" 

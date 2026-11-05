@@ -59,7 +59,7 @@ def update_job_application(db:Session,job_id:int,job_update:schemas.JobApplicati
     if db_job is None:
         raise HTTPException(
             status_code=404,
-            detail="Job does not exist"
+            detail="Job not found"
         )
     update=job_update.model_dump(exclude_unset=True)
 
@@ -75,11 +75,10 @@ def delete_job_application(db:Session,job_id:int,user_id:int):
     if db_job is None:
         raise HTTPException(
             status_code=404,
-            detail="Job does not exist"
+            detail="Job not found"
         )
     db.delete(db_job)
     db.commit()
-    return {"message":"Job deleted successfully"}
 
 def get_job_by_id_for_user(db:Session,job_id:int,user_id:int):
     job=db.query(models.JobApplication).filter(models.JobApplication.id == job_id, models.JobApplication.user_id == user_id).first()
