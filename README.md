@@ -6,7 +6,7 @@ A REST API for tracking job applications, with JWT authentication and per-user d
 
 ## Live demo
 
-Interactive API docs: **http://34.195.14.161:8000/docs**
+Interactive API docs: **https://54-209-43-23.sslip.io/docs**
 
 To try it:
 
@@ -15,9 +15,9 @@ To try it:
 3. Click **Authorize** at the top of the page and paste the token.
 4. Create, list, filter, update, and delete job applications. You only see your own jobs.
 
-The demo runs over plain HTTP, so use a throwaway email and password, not one you use elsewhere. It is hosted on a small AWS instance and may be offline at times.
+Health check: https://54-209-43-23.sslip.io/health
 
-Health check: http://34.195.14.161:8000/health
+The demo is hosted on a small AWS instance and may be offline at times. Please use a throwaway email and password.
 
 ## Features
 
@@ -29,11 +29,12 @@ Health check: http://34.195.14.161:8000/health
 - Database migrations managed with Alembic
 - `/health` endpoint that checks the database connection
 - Dockerized API and PostgreSQL with a healthcheck, so the API only starts once the database is ready
-- Automated test suite with pytest, including cross-user authorization tests, run on every push by GitHub Actions against a real PostgreSQL service
+- Served over HTTPS in production through a Caddy reverse proxy with automatic Let's Encrypt certificates
+- Automated test suite with pytest, including cross-user authorization tests, run on every push by GitHub Actions against PostgreSQL and SQLite
 
 ## Tech stack
 
-Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL, Docker, Docker Compose, Pydantic, pytest, GitHub Actions, AWS EC2
+Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL, Pydantic, Docker, Docker Compose, Caddy, pytest, GitHub Actions, AWS EC2
 
 ## Run with Docker (recommended)
 
@@ -52,6 +53,8 @@ python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 Use letters and digits for `POSTGRES_PASSWORD`. Special characters such as `@` break the database URL.
+
+`DOMAIN` and Caddy are only used for the HTTPS deployment. Locally you can leave `DOMAIN` as it is, and the API is served on http://localhost:8000.
 
 Start the API and PostgreSQL, then create the tables:
 
@@ -82,7 +85,7 @@ git clone https://github.com/Nithesh0812/JobTracker.git
 cd JobTracker
 
 python -m venv venv
-
+venv\Scripts\activate          # macOS/Linux: source venv/bin/activate
 
 pip install -r requirements.txt
 ```
@@ -108,17 +111,31 @@ By default the app uses a local SQLite file (`jobtracker.db`). To use a differen
 pytest -q
 ```
 
-The tests run against a separate in-memory database and never touch your real data. They cover registration and login, input validation, job CRUD, filtering, sorting, pagination defaults, the health check, and authorization (including a test that one user cannot read, edit, or delete another user's job, and that a token for a deleted user is rejected).
+By default the tests use an in-memory SQLite database and never touch your real data. To run them against PostgreSQL, set `TEST_DATABASE_URL` to a throwaway database. Its tables are dropped and recreated for every test, so never point it at real data:
 
-GitHub Actions runs the tests on every push, then applies all migrations to a fresh PostgreSQL database and checks that the models and migrations agree (`alembic check`).
+```bash
+TEST_DATABASE_URL=postgresql://user:password@localhost:5432/jobtracker_test pytest -q
+```
+
+The tests cover registration and login, input validation, job CRUD, filtering, sorting, pagination defaults, the health check, and authorization (including a test that one user cannot read, edit, or delete another user's job, and that a token for a deleted user is rejected).
+
+On every push, GitHub Actions runs the tests against PostgreSQL and then SQLite, applies all migrations to a fresh PostgreSQL database, and checks that the models and migrations agree (`alembic check`).
 
 ## Deployment
 
-The live demo runs on an AWS EC2 instance using the same Docker Compose setup described above:
+The live demo runs on an AWS EC2 instance using the same Docker Compose setup described above, plus a Caddy reverse proxy:
 
-- The API and PostgreSQL run as two containers; the database data lives in a named Docker volume, so it survives container recreation.
-- Only the API port (8000) is published. PostgreSQL is reachable only from inside the Docker network.
-- Both services use `restart: unless-stopped`, so they come back after a crash or a server reboot.
+- Caddy, the API and PostgreSQL run as three containers. The database data and Caddy's certificates live in named Docker volumes, so they survive container recreation.
+- Caddy serves HTTPS on ports 80 and 443 with automatic Let's Encrypt certificates. The API port is bound to localhost and only reachable through Caddy. PostgreSQL is reachable only from inside the Docker network.
+- All three services use `restart: unless-stopped`, so they come back after a crash or a server reboot.
 - Secrets (`SECRET_KEY` and the database credentials) are read from a `.env` file on the server and are not committed to the repository.
 - An Elastic IP keeps the address stable across instance restarts.
 
+To deploy or update, set `DOMAIN` and `COMPOSE_PROFILES=https` in the server's `.env`, then run:
+
+```bash
+docker compose up -d --build
+docker compose exec api alembic upgrade head
+```
+
+The EC2 security group allows inbound ports 80 and 443; port 8000 is not exposed.
