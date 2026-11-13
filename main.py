@@ -6,7 +6,15 @@ from fastapi import Query
 import models,schemas,crud
 from security import verify_password,create_access_token,decode_access_token
 from sqlalchemy import text
+
+import logging
+from logging_config import configure_logging,log_event
+from middleware import request_middleware
+
+configure_logging()
+logger=logging.getLogger("jobtracker.auth")
 app = FastAPI()
+app.middleware("http")(request_middleware)
 bearer_scheme=HTTPBearer()
 def get_db():
     db = SessionLocal()
@@ -19,12 +27,14 @@ def get_current_user(credentials:HTTPAuthorizationCredentials=Depends(bearer_sch
     token=credentials.credentials
     user_id=decode_access_token(token)
     if user_id is None:
+        log_event(logger,"auth_token_rejected",logging.WARNING,reason="invalid or expired token")
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired Token"
         )
     user=db.get(models.User,user_id)
     if user is None:
+        log_event(logger,"auth_token_rejected",logging.WARNING,reason="user not found")
         raise HTTPException(
             status_code=401,
             detail="User doesnt exist"
@@ -53,11 +63,13 @@ def home():
 def login(credentials:schemas.UserLogin,db:Session=Depends(get_db)):
     user=crud.get_user_by_email(db,credentials.email)
     if user is None or user.hashed_password is None or not verify_password(credentials.password,user.hashed_password):
+        log_event(logger,"auth_login_failed",logging.WARNING)
         raise HTTPException(
             status_code=401,
             detail="Invalid email or password"
         )
     access_token=create_access_token({"sub":str(user.id)})
+    log_event(logger,"auth_login_successful",user_id=user.id)
     return{"access_token":access_token,"token_type":"bearer"}
 
 @app.post("/auth/register",response_model=schemas.UserResponse,status_code=201)
@@ -87,7 +99,7 @@ def get_jobs_by_id(job_id:int,db:Session=Depends(get_db),current_user=Depends(ge
 def job_update(job_id:int,job_update:schemas.JobApplicationUpdate,db:Session=Depends(get_db),current_user=Depends(get_current_user)):
     return crud.update_job_application(db,job_id,job_update,user_id=current_user.id)
 
-@app.delete("/jobs/{job_id}")
+@app.delete("/jobs/{job_id}",status_code=204)
 def job_delete(job_id:int,db:Session=Depends(get_db),current_user=Depends(get_current_user)):
     crud.delete_job_application(db,job_id=job_id,user_id=current_user.id)
     return Response(status_code=204)

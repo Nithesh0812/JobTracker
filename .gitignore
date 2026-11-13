@@ -5,3 +5,4 @@ __pycache__/
 *.db
 *.bak
 .pytest_cache/
+.coverage

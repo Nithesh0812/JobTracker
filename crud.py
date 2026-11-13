@@ -4,6 +4,10 @@ from fastapi import HTTPException
 import models
 import schemas
 from security import hash_password
+import logging
+from logging_config import log_event
+
+logger=logging.getLogger("jobtracker.crud")
 def create_user(db:Session,user:schemas.UserCreate):
     db_user=models.User(
             full_name=user.full_name,
@@ -14,9 +18,11 @@ def create_user(db:Session,user:schemas.UserCreate):
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
+        log_event(logger,"user registered",user_id=db_user.id)
         return db_user
     except IntegrityError:
         db.rollback()
+        log_event(logger,"user_registration_conflict",logging.WARNING)
         raise HTTPException(
             status_code=400,
             detail="Email already exists"
@@ -51,6 +57,7 @@ def create_job_applications(db:Session,job:schemas.JobApplicationCreate,user_id:
     db.add(db_job)
     db.commit()
     db.refresh(db_job)
+    log_event(logger,"job_application_created",user_id=user_id,job_id=db_job.id,status=db_job.status)
     return db_job
 
 def update_job_application(db:Session,job_id:int,job_update:schemas.JobApplicationUpdate,user_id:int):
@@ -67,6 +74,7 @@ def update_job_application(db:Session,job_id:int,job_update:schemas.JobApplicati
         setattr(db_job,key,value)
     db.commit()
     db.refresh(db_job)
+    log_event(logger,"job_application_updated",user_id=user_id,job_id=db_job.id,fields=sorted(update))
     return db_job
 
 def delete_job_application(db:Session,job_id:int,user_id:int):
@@ -78,6 +86,7 @@ def delete_job_application(db:Session,job_id:int,user_id:int):
             detail="Job not found"
         )
     db.delete(db_job)
+    log_event(logger,"job_application_deleted",user_id=user_id,job_id=db_job.id)
     db.commit()
 
 def get_job_by_id_for_user(db:Session,job_id:int,user_id:int):

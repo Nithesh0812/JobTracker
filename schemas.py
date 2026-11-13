@@ -23,6 +23,18 @@ class JobStatus(str,Enum):
     offered="Offer Extended"
     rejected="Rejected"
 
+class SortField(str,Enum):
+    id="id",
+    company="company"
+    role="role"
+    status="status",
+    created_at="created_at"
+    updated_at="updated_at"
+
+class SortOrder(str,Enum):
+    asc="asc"
+    desc="desc"
+
 class JobApplicationCreate(BaseModel):
     company:str
     role:str
