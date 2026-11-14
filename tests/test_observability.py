@@ -151,3 +151,163 @@ def test_unhandled_exception_returns_500_and_logs_class(client, logs, monkeypatc
     line = [e for e in logs.events("http_request") if e["status_code"] == 500][0]
     assert line["error_type"] == "RuntimeError" and line["level"] == "ERROR"
     assert "private details" not in json.dumps(logs.lines)
+
+# ---------- 4 and 6. Database errors and health checks ----------
+
+import sqlalchemy.exc
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from main import app, get_db
+from tests.test_jobs import override_get_db
+
+BROKEN_DB_URL = "postgresql://telemetry_user:hunter2secret@127.0.0.1:1/nodb"
+
+
+def broken_db():
+    # A database that refuses connections, like a stopped Postgres container
+    bad_engine = create_engine(BROKEN_DB_URL, connect_args={"connect_timeout": 1})
+    db = Session(bind=bad_engine)
+    try:
+        yield db
+    finally:
+        db.close()
+        bad_engine.dispose()
+
+
+@pytest.fixture
+def database_down():
+    app.dependency_overrides[get_db] = broken_db
+    yield
+    app.dependency_overrides[get_db] = override_get_db
+
+
+def test_health_live(client):
+    response = client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json() == {"status": "alive"}
+
+
+def test_health_ready(client):
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    assert body["checks"]["database"]["status"] == "available"
+    assert body["checks"]["database"]["latency_ms"] >= 0
+
+
+def test_database_down_live_vs_ready(client, database_down, logs):
+    # The API process is fine...
+    assert client.get("/health/live").status_code == 200
+    # ...but it can't do real work
+    ready = client.get("/health/ready")
+    assert ready.status_code == 503
+    assert ready.json()["status"] == "not_ready"
+    assert ready.json()["checks"]["database"]["status"] == "unavailable"
+    # The old endpoint keeps its old behaviour
+    assert client.get("/health").status_code == 503
+
+    line = [e for e in logs.events("http_request") if e["path"] == "/health/ready"][0]
+    assert line["status_code"] == 503 and line["error_type"] == "OperationalError"
+
+
+def test_database_down_returns_503_and_logs_it(client, logs):
+    headers = auth_headers(client, "outage@example.com")
+    app.dependency_overrides[get_db] = broken_db
+    try:
+        response = client.get("/jobs", headers=headers)
+    finally:
+        app.dependency_overrides[get_db] = override_get_db
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Database unavailable"}
+
+    db_error = logs.events("db_error")[0]
+    assert db_error["level"] == "ERROR"
+    assert db_error["error_type"] == "OperationalError"
+    assert db_error["operation"] == "CONNECT"
+    assert db_error["request_id"] == response.headers["X-Request-ID"]
+    assert logs.events("db_unavailable")[0]["error_type"] == "OperationalError"
+
+    request = [e for e in logs.events("http_request") if e["path"] == "/jobs"][0]
+    assert request["status_code"] == 503 and request["level"] == "ERROR"
+
+    # No hostnames, usernames or passwords from the connection string
+    everything = json.dumps(logs.lines)
+    for secret in ("telemetry_user", "hunter2secret", "127.0.0.1", "nodb"):
+        assert secret not in everything
+
+
+def test_recovers_when_database_returns(client, database_down):
+    assert client.get("/health/ready").status_code == 503
+    app.dependency_overrides[get_db] = override_get_db
+    assert client.get("/health/ready").status_code == 200
+
+
+def test_pool_exhaustion_returns_503(client, tmp_path, logs):
+    headers = auth_headers(client, "pool@example.com")
+    # A pool with room for one connection, already taken
+    tiny = create_engine(f"sqlite:///{tmp_path}/pool.db", pool_size=1, max_overflow=0, pool_timeout=0.1)
+    held = tiny.connect()
+
+    def exhausted_db():
+        db = Session(bind=tiny)
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = exhausted_db
+    try:
+        response = client.get("/jobs", headers=headers)
+    finally:
+        app.dependency_overrides[get_db] = override_get_db
+        held.close()
+        tiny.dispose()
+
+    assert response.status_code == 503
+    assert len(logs.events("db_pool_exhausted")) == 1
+    request = [e for e in logs.events("http_request") if e["path"] == "/jobs"][0]
+    assert request["error_type"] == "TimeoutError"
+
+
+def test_failed_transaction_returns_500_and_logs_class(client, logs, monkeypatch):
+    headers = auth_headers(client, "txn@example.com")
+
+    def reject(*args, **kwargs):
+        raise sqlalchemy.exc.DataError("INSERT ... private-value", {}, Exception("private detail"))
+
+    monkeypatch.setattr(crud, "create_job_applications", reject)
+    response = client.post("/jobs", headers=headers, json={"company": "A", "role": "B", "status": "Applied"})
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal Server Error"}
+    failed = logs.events("db_transaction_failed")
+    assert len(failed) == 1 and failed[0]["error_type"] == "DataError"
+    everything = json.dumps(logs.lines)
+    assert "private-value" not in everything and "private detail" not in everything
+
+
+def test_real_constraint_error_is_logged_without_sql(client, logs):
+    # A real failed INSERT against the test database: a job for a user who
+    # doesn't exist breaks the NOT NULL rule on user_id
+    import models
+    from tests.test_jobs import TestingSessionLocal
+
+    db = TestingSessionLocal()
+    try:
+        db.add(models.JobApplication(company="LeakyCo", role="r", status="Applied", user_id=None))
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            db.commit()
+        db.rollback()
+    finally:
+        db.close()
+
+    error = logs.events("db_error")[0]
+    assert error["error_type"] == "IntegrityError"
+    # Postgres also reports the exact rule that was broken
+    assert error["driver_error"] in ("IntegrityError", "NotNullViolation")
+    assert error["sqlstate"] in (None, "23502")
+    assert error["operation"] == "INSERT"
+    assert "LeakyCo" not in json.dumps(logs.lines)

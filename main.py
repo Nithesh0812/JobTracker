@@ -1,7 +1,9 @@
-from fastapi import FastAPI, Depends,HTTPException,Response
+from fastapi import FastAPI, Depends,HTTPException,Response,Request
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials,HTTPBearer
 from sqlalchemy.orm import Session
-from database import SessionLocal
+from sqlalchemy.exc import SQLAlchemyError,OperationalError,InterfaceError,TimeoutError as PoolTimeoutError
+from database import SessionLocal,engine
 from fastapi import Query
 import models,schemas,crud
 from security import verify_password,create_access_token,decode_access_token
@@ -10,11 +12,32 @@ from sqlalchemy import text
 import logging
 from logging_config import configure_logging,log_event
 from middleware import request_middleware
+import time
 
 configure_logging()
 logger=logging.getLogger("jobtracker.auth")
+db_logger=logging.getLogger("jobtracker.db")
 app = FastAPI()
 app.middleware("http")(request_middleware)
+
+@app.exception_handler(SQLAlchemyError)
+def database_error_handler(request:Request,exc:SQLAlchemyError):
+    request.state.error_type=type(exc).__name__
+
+    if isinstance(exc,PoolTimeoutError):
+        pool=engine.pool
+        log_event(db_logger,"db_pool_exhausted",logging.ERROR,
+                  pool_size=pool.size() if hasattr(pool,"size") else None,
+                  checked_put=pool.checkedout() if hasattr(pool,"checkedout") else None)
+        return JSONResponse(status_code=503, content={"detail":" Database unavailable"})
+
+    if isinstance(exc,(OperationalError,InterfaceError)) or getattr(exc,"connection_invalidated",False):
+        log_event(db_logger,"db_unavailable",logging.ERROR,error_type=type(exc).__name__)
+        return JSONResponse(status_code=503, content={"detail":"Database unavailable"})
+    
+    log_event(db_logger,"db_transaction_failed",logging.ERROR,error_type=type(exc).__name__)
+    return JSONResponse(status_code=500, content={"detail":"Internal Server Error"})
+
 bearer_scheme=HTTPBearer()
 def get_db():
     db = SessionLocal()
@@ -41,16 +64,41 @@ def get_current_user(credentials:HTTPAuthorizationCredentials=Depends(bearer_sch
         )
     return user
 
-@app.get("/health")
-def health_check(db:Session=Depends(get_db)):
+#Manually create and pass the db session to the health check endpoint to avoid dependency injection issues
+def check_database(db:Session,request:Request):
+    """ Run SELECT 1. Return ok and milliseconds taken. If an exception occurs, return ok=False and the exception type in request.state.error_type """
+    start = time.perf_counter()
     try:
         db.execute(text("SELECT 1"))
-        return {"status":"healthy"}
-    except Exception:
+        ok = True
+    except SQLAlchemyError as exc:
+        ok = False
+        request.state.error_type=type(exc).__name__
+    return ok,round((time.perf_counter() - start) * 1000, 2)
+
+@app.get("/health")
+def health_check(request:Request, db:Session=Depends(get_db)):
+    ok,_=check_database(db,request)
+    if not ok:
         raise HTTPException(
             status_code=503,
             detail="Database unavailable"
         )
+    return {"status":"healthy"}
+
+@app.get("/health/live")
+def health_live():
+    return {"status":"alive"}
+
+@app.get("/health/ready")
+def health_ready(request:Request,db:Session=Depends(get_db)):
+        ok,latency_ms=check_database(db,request)
+        if not ok:
+            return JSONResponse(
+                status_code=503,
+                content={"status":"not_ready","checks":{"database":{"status":"unavailable","latency_ms":latency_ms}}},
+            )
+        return {"status":"ready","checks":{"database":{"status":"available","latency_ms":latency_ms}}}
 @app.get("/auth/me",response_model=schemas.UserResponse)
 def get_me(current_user=Depends(get_current_user)):
     return current_user
