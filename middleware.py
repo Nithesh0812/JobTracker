@@ -26,6 +26,11 @@ from logging_config import log_event, request_id_var
 logger = logging.getLogger("jobtracker.access")
 
 REQUEST_ID_HEADER = "X-Request-ID"
+
+# Called every few seconds by Prometheus and Docker's healthcheck. Successful
+# calls are logged at DEBUG so they don't bury real events; failures still
+# log at WARNING or ERROR.
+QUIET_PATHS = {"/metrics", "/health/live"}
 SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
@@ -58,10 +63,13 @@ async def request_middleware(request: Request, call_next):
         duration_ms = round(elapsed * 1000, 2)
         status = response.status_code
         level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
+        path = route_template(request)
+        if path in QUIET_PATHS and status < 400:
+            level = logging.DEBUG
 
         fields = {
             "method": request.method,
-            "path": route_template(request),
+            "path": path,
             "status_code": status,
             "duration_ms": duration_ms,
         }
@@ -70,7 +78,6 @@ async def request_middleware(request: Request, call_next):
             fields["error_type"] = error_type
         log_event(logger, "http_request", level, **fields)
 
-        path = fields["path"]
         metrics.HTTP_REQUESTS.labels(request.method, path, str(status)).inc()
         metrics.HTTP_REQUEST_DURATION.labels(request.method, path).observe(elapsed)
         if status >= 500:

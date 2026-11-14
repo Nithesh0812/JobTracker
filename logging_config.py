@@ -12,6 +12,7 @@ notes, search terms) as fields.
 
 import json
 import logging
+import logging.handlers
 import os
 import sys
 from contextvars import ContextVar
@@ -56,12 +57,40 @@ def log_event(logger: logging.Logger, event: str, level: int = logging.INFO, **f
     logger.log(level, event, extra={"fields": {"event": event, **fields}})
 
 
+def file_handler(path: str) -> logging.Handler:
+    """Writes the same JSON lines to a file, rotated so it can't fill the disk.
+
+    Used so logs survive container rebuilds and tools such as TraceLens can
+    read them as a plain file. Keeps LOG_FILE_BACKUPS old files of
+    LOG_FILE_MAX_MB each (app.log.1, app.log.2, ...).
+    """
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        path,
+        maxBytes=int(os.getenv("LOG_FILE_MAX_MB", "10")) * 1024 * 1024,
+        backupCount=int(os.getenv("LOG_FILE_BACKUPS", "5")),
+        encoding="utf-8",
+    )
+    handler.setFormatter(JSONFormatter())
+    return handler
+
+
 def configure_logging() -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JSONFormatter())
+    handlers = [handler]
+
+    # Optional: also write to a file (set in docker-compose.yml)
+    log_file = os.getenv("LOG_FILE")
+    if log_file:
+        handlers.append(file_handler(log_file))
 
     root = logging.getLogger()
-    root.handlers = [handler]
+    for old in root.handlers:
+        old.close()
+    root.handlers = handlers
     root.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
 
     # Send uvicorn's own messages (startup, shutdown, errors) through the JSON

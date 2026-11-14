@@ -41,6 +41,8 @@ jobs:
         run : pytest -q
         env:
           DATABASE_URL: "sqlite://"
+      - name: Validate docker-compose.yml with every profile
+        run: docker compose config --env-file .env.example --profile https --profile telemetry config --quiet
       - name: Migrating to a test database
         env:
           PGPASSWORD: postgres

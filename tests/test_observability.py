@@ -432,3 +432,71 @@ def test_pool_gauges_on_postgres(client):
     else:
         # SQLite's pool has no such numbers, so nothing is exported
         assert "jobtracker_db_pool_size" not in text
+
+# ---------- 7. Log file and routine probes ----------
+
+import logging_config
+
+
+def test_log_file_gets_the_same_json_lines(tmp_path):
+    path = tmp_path / "logs" / "app.log"  # folder doesn't exist yet
+    handler = logging_config.file_handler(str(path))
+    test_logger = logging.getLogger("jobtracker.filetest")
+    test_logger.addHandler(handler)
+    try:
+        logging_config.log_event(test_logger, "file_check", job_id=7)
+    finally:
+        test_logger.removeHandler(handler)
+        handler.close()
+
+    line = json.loads(path.read_text(encoding="utf-8").strip())
+    assert line["event"] == "file_check" and line["job_id"] == 7
+    assert line["service"] == "jobtracker-api"
+
+
+def test_log_file_rotates(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOG_FILE_BACKUPS", "2")
+    path = tmp_path / "app.log"
+    handler = logging_config.file_handler(str(path))
+    handler.maxBytes = 300  # tiny, so a few lines force a rotation
+    test_logger = logging.getLogger("jobtracker.rotatetest")
+    test_logger.addHandler(handler)
+    try:
+        for i in range(20):
+            logging_config.log_event(test_logger, "rotation_check", n=i)
+    finally:
+        test_logger.removeHandler(handler)
+        handler.close()
+
+    files = sorted(p.name for p in tmp_path.iterdir())
+    assert files == ["app.log", "app.log.1", "app.log.2"]  # never more than 2 old files
+
+
+def test_configure_logging_writes_file_when_log_file_set(tmp_path, monkeypatch):
+    path = tmp_path / "app.log"
+    monkeypatch.setenv("LOG_FILE", str(path))
+    logging_config.configure_logging()
+    try:
+        logging_config.log_event(logging.getLogger("jobtracker.configtest"), "configured")
+    finally:
+        monkeypatch.delenv("LOG_FILE")
+        logging_config.configure_logging()  # back to stdout only
+
+    assert '"event": "configured"' in path.read_text(encoding="utf-8")
+    assert not any(isinstance(h, logging.FileHandler) for h in logging.getLogger().handlers)
+
+
+def test_routine_probes_are_not_logged_at_info(client, logs):
+    client.get("/health/live")
+    client.get("/metrics")
+    client.get("/health/ready")
+
+    paths = [e["path"] for e in logs.events("http_request")]
+    assert paths == ["/health/ready"]
+
+
+def test_routine_probes_still_counted_in_metrics(client):
+    labels = {"method": "GET", "path": "/health/live", "status_code": "200"}
+    before = sample("http_requests_total", **labels)
+    client.get("/health/live")
+    assert sample("http_requests_total", **labels) == before + 1

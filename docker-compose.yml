@@ -1,3 +1,11 @@
+# Docker's own log files for every container: rotated so they can't fill the
+# disk (3 files of 10 MB each per container)
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:15
@@ -14,6 +22,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: ${DB_MEMORY_LIMIT:-256m}
+          cpus: "${DB_CPU_LIMIT:-0.50}"
+
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -24,7 +39,16 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
-    depends_on: [api]
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+
   api:
     build: .
     restart: unless-stopped
@@ -34,9 +58,57 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       SECRET_KEY: ${SECRET_KEY}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # JSON logs also go to ./logs/app.log on the host (see volumes below),
+      # so they survive rebuilds and TraceLens can read them as a file
+      LOG_FILE: /app/logs/app.log
+      LOG_FILE_MAX_MB: ${LOG_FILE_MAX_MB:-10}
+      LOG_FILE_BACKUPS: ${LOG_FILE_BACKUPS:-5}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-3}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-5}
+    volumes:
+      - ./logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      # Liveness only: a database outage must not make Docker restart the API
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEMORY_LIMIT:-256m}
+          cpus: "${API_CPU_LIMIT:-0.50}"
+
+  prometheus:
+    # Metrics history for TraceLens. Optional: start it with the "telemetry"
+    # profile. Reachable only from the server itself on 127.0.0.1:9090.
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    profiles: ["telemetry"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-7d}
+      - --storage.tsdb.retention.size=1GB
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./telemetry/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on: [api]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+
 volumes:
   pgdata:
   caddy_data:
+  prometheus_data:

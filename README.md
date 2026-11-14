@@ -15,7 +15,7 @@ To try it:
 3. Click **Authorize** at the top of the page and paste the token.
 4. Create, list, filter, update, and delete job applications. You only see your own jobs.
 
-Health check: https://54-209-43-23.sslip.io/health
+Health checks: https://54-209-43-23.sslip.io/health/live and https://54-209-43-23.sslip.io/health/ready
 
 The demo is hosted on a small AWS instance and may be offline at times. Please use a throwaway email and password.
 
@@ -27,14 +27,16 @@ The demo is hosted on a small AWS instance and may be offline at times. Please u
 - Every query is scoped to the authenticated user, so users can never see or change each other's data
 - Input validation: email format, password length (8 to 128 characters), and a fixed set of job statuses
 - Database migrations managed with Alembic
-- `/health` endpoint that checks the database connection
+- Structured JSON logs with a request ID on every line, returned to the client in an `X-Request-ID` header
+- Prometheus metrics for request rates, latency, errors and the database connection pool
+- Separate liveness and readiness checks, and a 503 (not a 500) when the database is unavailable
 - Dockerized API and PostgreSQL with a healthcheck, so the API only starts once the database is ready
 - Served over HTTPS in production through a Caddy reverse proxy with automatic Let's Encrypt certificates
 - Automated test suite with pytest, including cross-user authorization tests, run on every push by GitHub Actions against PostgreSQL and SQLite
 
 ## Tech stack
 
-Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL, Pydantic, Docker, Docker Compose, Caddy, pytest, GitHub Actions, AWS EC2
+Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL, Pydantic, Docker, Docker Compose, Caddy, Prometheus, pytest, GitHub Actions, AWS EC2
 
 ## Run with Docker (recommended)
 
@@ -69,7 +71,7 @@ Useful commands:
 
 ```bash
 docker compose ps            # service status
-docker compose logs api      # API logs
+docker compose logs api      # API logs (JSON, one event per line)
 docker compose stop          # stop, keep data
 docker compose down -v       # stop and delete the database
 ```
@@ -105,6 +107,51 @@ uvicorn main:app --reload
 
 By default the app uses a local SQLite file (`jobtracker.db`). To use a different database, set the `DATABASE_URL` environment variable.
 
+## Observability
+
+The API is built to be investigated when something goes wrong, by a person or by a tool.
+
+**Logs.** Every log line is a single JSON object with a timestamp, level, event name and the request ID:
+
+```json
+{"timestamp": "2026-11-12T18:40:59.585Z", "service": "jobtracker-api", "level": "WARNING", "logger": "jobtracker.access", "request_id": "req-f6be1057130d4f36", "event": "http_request", "method": "GET", "path": "/jobs/{job_id}", "status_code": 404, "duration_ms": 5.45}
+```
+
+- Every request gets an ID, returned in the `X-Request-ID` response header. Send your own `X-Request-ID` and the API uses it, so you can follow one request through every log line it produced.
+- Paths are logged as route templates (`/jobs/{job_id}`), never with real IDs or query strings.
+- Logs never contain passwords, tokens, email addresses, SQL, or text users typed (company names, notes, search terms). Errors are logged by exception class only. Tests check this.
+- In Docker, logs go to `docker compose logs api` and to `./logs/app.log` on the host, rotated at 10 MB with 5 old files kept.
+
+Main events: `http_request`, `auth_login_successful`, `auth_login_failed`, `auth_token_rejected`, `user_registered`, `job_application_created`, `job_application_updated`, `job_application_deleted`, `db_error`, `db_unavailable`, `db_pool_exhausted` and `db_transaction_failed`.
+
+**Health checks.**
+
+| Endpoint | Checks | Use it to ask |
+| --- | --- | --- |
+| `GET /health/live` | Only that the API process answers | Is the API running? Docker's healthcheck uses this |
+| `GET /health/ready` | The database too, with its response time | Can the API do real work? |
+| `GET /health` | Same as `/health/ready` | Kept for backward compatibility |
+
+If the database goes down, `/health/live` stays 200 while `/health/ready` and the job endpoints return 503 within a few seconds, so an unresponsive API and a database failure look different.
+
+**Metrics.** `GET /metrics` serves Prometheus metrics: `http_requests_total`, `http_request_duration_seconds`, `http_requests_in_progress`, `http_server_errors_total`, `jobtracker_db_up`, `jobtracker_db_errors_total`, `jobtracker_db_pool_exhausted_total` and, on PostgreSQL, the connection pool gauges (`jobtracker_db_pool_size`, `_checked_out`, `_checked_in` and `_overflow`). It's for internal use: Caddy answers 404 to it from the internet, and it isn't listed in `/docs`.
+
+To keep metrics history, start Prometheus with the `telemetry` profile:
+
+```bash
+docker compose --profile telemetry up -d
+```
+
+It scrapes the API every 15 seconds, keeps 7 days of data, and is reachable only from the machine itself at http://localhost:9090.
+
+**Reading logs and metrics from a deployed server.** Nothing besides the API is exposed to the internet. Use an SSH tunnel:
+
+```bash
+ssh -i key.pem -L 9090:localhost:9090 -L 8000:localhost:8000 ubuntu@<server>
+```
+
+While it's open, Prometheus is at http://localhost:9090 and the API's `/metrics` at http://localhost:8000/metrics on your own machine. The log file is `~/JobTracker/logs/app.log` on the server.
+
 ## Running the tests
 
 ```bash
@@ -117,21 +164,23 @@ By default the tests use an in-memory SQLite database and never touch your real 
 TEST_DATABASE_URL=postgresql://user:password@localhost:5432/jobtracker_test pytest -q
 ```
 
-The tests cover registration and login, input validation, job CRUD, filtering, sorting, pagination defaults, the health check, and authorization (including a test that one user cannot read, edit, or delete another user's job, and that a token for a deleted user is rejected).
+The tests cover registration and login, input validation, job CRUD, filtering, sorting, pagination defaults, and authorization (including a test that one user cannot read, edit, or delete another user's job, and that a token for a deleted user is rejected). `tests/test_observability.py` covers the logging, request IDs, metrics and health checks, including a simulated database outage, an exhausted connection pool, recovery afterwards, and checks that no secrets or user data reach the logs or metrics.
 
-On every push, GitHub Actions runs the tests against PostgreSQL and then SQLite, applies all migrations to a fresh PostgreSQL database, and checks that the models and migrations agree (`alembic check`).
+On every push, GitHub Actions runs the tests against PostgreSQL and then SQLite, applies all migrations to a fresh PostgreSQL database, checks that the models and migrations agree (`alembic check`), and validates `docker-compose.yml` with every profile.
 
 ## Deployment
 
 The live demo runs on an AWS EC2 instance using the same Docker Compose setup described above, plus a Caddy reverse proxy:
 
-- Caddy, the API and PostgreSQL run as three containers. The database data and Caddy's certificates live in named Docker volumes, so they survive container recreation.
+- Caddy, the API and PostgreSQL run as three containers, plus Prometheus when the `telemetry` profile is on. The database data and Caddy's certificates live in named Docker volumes, so they survive container recreation.
 - Caddy serves HTTPS on ports 80 and 443 with automatic Let's Encrypt certificates. The API port is bound to localhost and only reachable through Caddy. PostgreSQL is reachable only from inside the Docker network.
-- All three services use `restart: unless-stopped`, so they come back after a crash or a server reboot.
+- All services use `restart: unless-stopped`, so they come back after a crash or a server reboot. The API has a Docker healthcheck on `/health/live`, and Caddy waits for it before starting.
+- Each container has memory and CPU limits, so one runaway service can't take down the server. The API and database limits can be raised in `.env` (see `.env.example`).
+- Docker's own logs are rotated (3 files of 10 MB per container), so logs can't fill the disk.
 - Secrets (`SECRET_KEY` and the database credentials) are read from a `.env` file on the server and are not committed to the repository.
 - An Elastic IP keeps the address stable across instance restarts.
 
-To deploy or update, set `DOMAIN` and `COMPOSE_PROFILES=https` in the server's `.env`, then run:
+To deploy or update, set `DOMAIN` and `COMPOSE_PROFILES=https` in the server's `.env` (or `COMPOSE_PROFILES=https,telemetry` to keep metrics history), then run:
 
 ```bash
 docker compose up -d --build
