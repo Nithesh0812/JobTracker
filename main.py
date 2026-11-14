@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials,HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError,OperationalError,InterfaceError,TimeoutError as PoolTimeoutError
+from sqlalchemy.pool import QueuePool
 from database import SessionLocal,engine
 from fastapi import Query
 import models,schemas,crud
@@ -26,9 +27,10 @@ def database_error_handler(request:Request,exc:SQLAlchemyError):
 
     if isinstance(exc,PoolTimeoutError):
         pool=engine.pool
+        is_queue_pool=isinstance(pool,QueuePool)
         log_event(db_logger,"db_pool_exhausted",logging.ERROR,
-                  pool_size=pool.size() if hasattr(pool,"size") else None,
-                  checked_put=pool.checkedout() if hasattr(pool,"checkedout") else None)
+                  pool_size=pool.size() if is_queue_pool else None,
+                  checked_put=pool.checkedout() if is_queue_pool else None)
         return JSONResponse(status_code=503, content={"detail":" Database unavailable"})
 
     if isinstance(exc,(OperationalError,InterfaceError)) or getattr(exc,"connection_invalidated",False):

@@ -16,12 +16,17 @@ DB_CONNECT_TIMEOUT=int(os.getenv("DB_CONNECT_TIMEOUT","3"))
 # How long a request waits for a free pooled connection before giving up
 DB_POOL_TIMEOUT=int(os.getenv("DB_POOL_TIMEOUT","5"))
 
-engine=create_engine(
-        DATABASE_URL,
-        connect_args={"check_same_thread":False} if DATABASE_URL.startswith("sqlite") else {"connect_timeout":DB_CONNECT_TIMEOUT},
-        pool_pre_ping=True,
-        pool_timeout=DB_POOL_TIMEOUT,
-)
+if DATABASE_URL.startswith("sqlite"):
+    # SQLite has no network connection to time out, and in-memory SQLite
+    # ("sqlite://") uses a pool that doesn't accept pool_timeout
+    engine_options={"connect_args":{"check_same_thread":False}}
+else:
+    engine_options={
+        "connect_args":{"connect_timeout":DB_CONNECT_TIMEOUT},
+        "pool_timeout":DB_POOL_TIMEOUT,
+    }
+
+engine=create_engine(DATABASE_URL,pool_pre_ping=True,**engine_options)
 
 SessionLocal=sessionmaker(
     autocommit=False,
