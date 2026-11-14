@@ -311,3 +311,124 @@ def test_real_constraint_error_is_logged_without_sql(client, logs):
     assert error["sqlstate"] in (None, "23502")
     assert error["operation"] == "INSERT"
     assert "LeakyCo" not in json.dumps(logs.lines)
+
+# ---------- 9. Metrics ----------
+
+from prometheus_client import REGISTRY
+
+from database import engine
+
+
+def sample(name, **labels):
+    # Counters keep counting across tests, so tests compare before and after
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+def test_metrics_endpoint_serves_prometheus_text(client):
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    for name in ("http_requests_total", "http_request_duration_seconds_bucket",
+                 "http_requests_in_progress", "jobtracker_db_up"):
+        assert name in response.text
+
+
+def test_metrics_not_in_api_docs(client):
+    assert "/metrics" not in client.get("/openapi.json").json()["paths"]
+
+
+def test_request_counter_and_latency(client):
+    labels = {"method": "GET", "path": "/", "status_code": "200"}
+    count_before = sample("http_requests_total", **labels)
+    latency_before = sample("http_request_duration_seconds_count", method="GET", path="/")
+
+    client.get("/")
+    client.get("/")
+
+    assert sample("http_requests_total", **labels) == count_before + 2
+    assert sample("http_request_duration_seconds_count", method="GET", path="/") == latency_before + 2
+    assert sample("http_requests_in_progress") == 0
+
+
+def test_metrics_use_route_templates_not_ids(client):
+    headers = auth_headers(client, "metrics-ids@example.com")
+    client.get("/jobs/424242", headers=headers)
+    client.get("/no-such-page-777")
+
+    text = client.get("/metrics").text
+    assert 'path="/jobs/{job_id}",status_code="404"' in text
+    assert 'path="<unmatched>"' in text
+    assert "424242" not in text and "no-such-page-777" not in text
+
+
+def test_server_errors_counted_with_exception_class(client, monkeypatch):
+    headers = auth_headers(client, "metrics-500@example.com")
+    labels = {"method": "GET", "path": "/jobs/{job_id}", "status_code": "500", "error_type": "RuntimeError"}
+    before = sample("http_server_errors_total", **labels)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(crud, "get_job_by_id_for_user", explode)
+    client.get("/jobs/1", headers=headers)
+
+    assert sample("http_server_errors_total", **labels) == before + 1
+
+
+def test_database_outage_shows_in_metrics(client):
+    labels = {"method": "GET", "path": "/health/ready", "status_code": "503", "error_type": "OperationalError"}
+    errors_before = sample("http_server_errors_total", **labels)
+    db_errors_before = sample("jobtracker_db_errors_total", error_type="OperationalError", operation="CONNECT")
+
+    app.dependency_overrides[get_db] = broken_db
+    try:
+        client.get("/health/ready")
+        down = client.get("/metrics").text
+    finally:
+        app.dependency_overrides[get_db] = override_get_db
+
+    assert "jobtracker_db_up 0.0" in down
+    assert sample("http_server_errors_total", **labels) == errors_before + 1
+    assert sample("jobtracker_db_errors_total", error_type="OperationalError", operation="CONNECT") >= db_errors_before + 2
+    # The connection string never reaches the metrics
+    assert "hunter2secret" not in down and "telemetry_user" not in down
+
+    # Recovery
+    assert "jobtracker_db_up 1.0" in client.get("/metrics").text
+
+
+def test_pool_exhaustion_counted(client, tmp_path):
+    headers = auth_headers(client, "metrics-pool@example.com")
+    before = sample("jobtracker_db_pool_exhausted_total")
+    tiny = create_engine(f"sqlite:///{tmp_path}/pool.db", pool_size=1, max_overflow=0, pool_timeout=0.1)
+    held = tiny.connect()
+
+    def exhausted_db():
+        db = Session(bind=tiny)
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = exhausted_db
+    try:
+        assert client.get("/jobs", headers=headers).status_code == 503
+    finally:
+        app.dependency_overrides[get_db] = override_get_db
+        held.close()
+        tiny.dispose()
+
+    assert sample("jobtracker_db_pool_exhausted_total") == before + 1
+
+
+def test_pool_gauges_on_postgres(client):
+    from sqlalchemy.pool import QueuePool
+
+    text = client.get("/metrics").text
+    if isinstance(engine.pool, QueuePool):
+        for name in ("jobtracker_db_pool_size", "jobtracker_db_pool_checked_out",
+                     "jobtracker_db_pool_checked_in", "jobtracker_db_pool_overflow"):
+            assert name in text
+    else:
+        # SQLite's pool has no such numbers, so nothing is exported
+        assert "jobtracker_db_pool_size" not in text

@@ -9,7 +9,8 @@ from fastapi import Query
 import models,schemas,crud
 from security import verify_password,create_access_token,decode_access_token
 from sqlalchemy import text
-
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+import metrics
 import logging
 from logging_config import configure_logging,log_event
 from middleware import request_middleware
@@ -28,9 +29,10 @@ def database_error_handler(request:Request,exc:SQLAlchemyError):
     if isinstance(exc,PoolTimeoutError):
         pool=engine.pool
         is_queue_pool=isinstance(pool,QueuePool)
+        metrics.DB_POOL_EXHAUSTED.inc()
         log_event(db_logger,"db_pool_exhausted",logging.ERROR,
                   pool_size=pool.size() if is_queue_pool else None,
-                  checked_put=pool.checkedout() if is_queue_pool else None)
+                  checked_out=pool.checkedout() if is_queue_pool else None)
         return JSONResponse(status_code=503, content={"detail":" Database unavailable"})
 
     if isinstance(exc,(OperationalError,InterfaceError)) or getattr(exc,"connection_invalidated",False):
@@ -76,7 +78,10 @@ def check_database(db:Session,request:Request):
     except SQLAlchemyError as exc:
         ok = False
         request.state.error_type=type(exc).__name__
-    return ok,round((time.perf_counter() - start) * 1000, 2)
+    elapsed=time.perf_counter() - start
+    metrics.DB_UP.set(1 if ok else 0)
+    metrics.DB_CHECK_SECONDS.set(elapsed)
+    return ok,round(elapsed * 1000, 2)
 
 @app.get("/health")
 def health_check(request:Request, db:Session=Depends(get_db)):
@@ -88,6 +93,10 @@ def health_check(request:Request, db:Session=Depends(get_db)):
         )
     return {"status":"healthy"}
 
+@app.get("/metrics",include_in_schema=False)
+def metrics_endpoint(request:Request,db:Session=Depends(get_db)):
+    check_database(db,request)
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 @app.get("/health/live")
 def health_live():
     return {"status":"alive"}

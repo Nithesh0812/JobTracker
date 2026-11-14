@@ -5,6 +5,7 @@ import logging
 import os
 from dotenv import load_dotenv
 
+import metrics
 from logging_config import log_event
 
 load_dotenv()
@@ -36,6 +37,8 @@ SessionLocal=sessionmaker(
 
 Base=declarative_base()
 
+metrics.register_pool_metrics(engine)
+
 logger=logging.getLogger("jobtracker.db")
 
 
@@ -58,13 +61,15 @@ def log_database_error(context):
         operation=statement.split(None,1)[0].upper()
     else:
         operation="CONNECT"
+    error_type=type(wrapped).__name__ if wrapped is not None else type(driver_exc).__name__
+    metrics.DB_ERRORS.labels(error_type,operation).inc()
     log_event(
         logger,
         "db_error",
         # A stale pooled connection caught by pool_pre_ping is replaced
         # automatically, so it's a warning rather than an error
         logging.WARNING if context.is_pre_ping else logging.ERROR,
-        error_type=type(wrapped).__name__ if wrapped is not None else type(driver_exc).__name__,
+        error_type=error_type,
         driver_error=type(driver_exc).__name__,
         sqlstate=getattr(driver_exc,"pgcode",None),
         operation=operation,

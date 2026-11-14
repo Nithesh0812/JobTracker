@@ -20,6 +20,7 @@ import uuid
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+import metrics
 from logging_config import log_event, request_id_var
 
 logger = logging.getLogger("jobtracker.access")
@@ -45,6 +46,7 @@ async def request_middleware(request: Request, call_next):
     token = request_id_var.set(request_id)
 
     start = time.perf_counter()
+    metrics.HTTP_REQUESTS_IN_PROGRESS.inc()
     try:
         try:
             response = await call_next(request)
@@ -52,7 +54,8 @@ async def request_middleware(request: Request, call_next):
             request.state.error_type = type(exc).__name__
             response = JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        elapsed = time.perf_counter() - start
+        duration_ms = round(elapsed * 1000, 2)
         status = response.status_code
         level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
 
@@ -67,7 +70,16 @@ async def request_middleware(request: Request, call_next):
             fields["error_type"] = error_type
         log_event(logger, "http_request", level, **fields)
 
+        path = fields["path"]
+        metrics.HTTP_REQUESTS.labels(request.method, path, str(status)).inc()
+        metrics.HTTP_REQUEST_DURATION.labels(request.method, path).observe(elapsed)
+        if status >= 500:
+            metrics.HTTP_SERVER_ERRORS.labels(
+                request.method, path, str(status), error_type or "none"
+            ).inc()
+
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
     finally:
+        metrics.HTTP_REQUESTS_IN_PROGRESS.dec()
         request_id_var.reset(token)
