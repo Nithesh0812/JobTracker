@@ -15,12 +15,15 @@ import logging
 from logging_config import configure_logging,log_event
 from middleware import request_middleware
 import time
+import demo_scenarios
 
 configure_logging()
 logger=logging.getLogger("jobtracker.auth")
 db_logger=logging.getLogger("jobtracker.db")
-app = FastAPI()
+app = FastAPI(dependencies=[Depends(demo_scenarios.inject_job_faults)])
 app.middleware("http")(request_middleware)
+app.include_router(demo_scenarios.router)
+demo_scenarios.register_metrics()
 
 @app.exception_handler(SQLAlchemyError)
 def database_error_handler(request:Request,exc:SQLAlchemyError):

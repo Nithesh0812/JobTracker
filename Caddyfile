@@ -1,7 +1,7 @@
 {$DOMAIN}
 {
     encode gzip
-    @internal path /metrics
+    @internal path /metrics /demo/*
     respond @internal 404
     reverse_proxy api:8000
 }

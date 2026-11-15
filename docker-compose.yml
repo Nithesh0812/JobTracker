@@ -65,6 +65,11 @@ services:
       LOG_FILE_BACKUPS: ${LOG_FILE_BACKUPS:-5}
       DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-3}
       DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-5}
+
+      # DEMO: incident scenarios for TraceLens. Off unless set to true in .env
+      DEMO_SCENARIOS_ENABLED: ${DEMO_SCENARIOS_ENABLED:-false}
+      DEMO_TOKEN: ${DEMO_TOKEN:-}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-demo-password-2026}
     volumes:
       - ./logs:/app/logs
     depends_on:

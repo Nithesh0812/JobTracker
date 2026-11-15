@@ -152,6 +152,38 @@ ssh -i key.pem -L 9090:localhost:9090 -L 8000:localhost:8000 ubuntu@<server>
 
 While it's open, Prometheus is at http://localhost:9090 and the API's `/metrics` at http://localhost:8000/metrics on your own machine. The log file is `~/JobTracker/logs/app.log` on the server.
 
+## Demo incident scenarios (temporary)
+
+JobTracker doubles as a test service for TraceLens, an incident investigation tool. For that it can simulate incidents on demand. This is **off by default** and is temporary: it lives in `demo_scenarios.py` and `scripts/demo.py`, and every other line it needs is marked `DEMO`.
+
+| Scenario | What happens while it's on |
+| --- | --- |
+| `db_outage` | Every database query fails, as if PostgreSQL were down: 503s, `/health/ready` fails, `jobtracker_db_up` drops to 0. `/health/live` stays up |
+| `latency` | `GET /jobs` and `GET /jobs/{job_id}` wait an extra `delay_ms` (50 to 10,000) |
+| `exception` | A share (`error_rate`, 0 to 1) of `/jobs` requests fail with an unhandled error and return 500 |
+| Traffic spike | Not a switch: `scripts/demo.py traffic` with a high `--rps` |
+
+Safeguards:
+
+- Nothing happens unless `DEMO_SCENARIOS_ENABLED=true` **and** `DEMO_TOKEN` is at least 16 characters. Otherwise every `/demo` URL returns 404.
+- Every `/demo` request needs the token in an `X-Demo-Token` header. `/demo` isn't listed in `/docs`, and Caddy answers 404 to it from the internet, so it can only be used from the server itself.
+- Every scenario switches itself off after `--duration` seconds (10 minutes by default, 1 hour at most). A restart clears them all.
+- Scenarios never change stored data. `scripts/demo.py` only ever uses accounts ending in `@demo.example.com`.
+- Every change is logged as a `demo_scenario_enabled`, `demo_scenario_disabled`, `demo_scenario_expired` or `demo_scenarios_reset` event, and shown in the `jobtracker_demo_scenario_active` metric.
+
+To run a demo on the server, set `DEMO_SCENARIOS_ENABLED=true` and a `DEMO_TOKEN` in `.env`, then:
+
+```bash
+docker compose up -d                                            # apply the .env change
+docker compose exec api python scripts/demo.py seed             # demo users and jobs
+docker compose exec api python scripts/demo.py traffic --rps 2 --duration 300   # healthy baseline
+docker compose exec api python scripts/demo.py scenario on latency --delay-ms 1500
+docker compose exec api python scripts/demo.py scenario status
+docker compose exec api python scripts/demo.py reset            # all scenarios off, demo data restored
+```
+
+For `db_outage`, start the traffic first (in a second terminal) and switch the outage on while it runs, since the demo users can't log in during an outage. Set `DEMO_SCENARIOS_ENABLED=false` again afterwards.
+
 ## Running the tests
 
 ```bash
@@ -164,7 +196,7 @@ By default the tests use an in-memory SQLite database and never touch your real 
 TEST_DATABASE_URL=postgresql://user:password@localhost:5432/jobtracker_test pytest -q
 ```
 
-The tests cover registration and login, input validation, job CRUD, filtering, sorting, pagination defaults, and authorization (including a test that one user cannot read, edit, or delete another user's job, and that a token for a deleted user is rejected). `tests/test_observability.py` covers the logging, request IDs, metrics and health checks, including a simulated database outage, an exhausted connection pool, recovery afterwards, and checks that no secrets or user data reach the logs or metrics.
+The tests cover registration and login, input validation, job CRUD, filtering, sorting, pagination defaults, and authorization (including a test that one user cannot read, edit, or delete another user's job, and that a token for a deleted user is rejected). `tests/test_observability.py` covers the logging, request IDs, metrics and health checks, including a simulated database outage, an exhausted connection pool, recovery afterwards, and checks that no secrets or user data reach the logs or metrics. `tests/test_demo_scenarios.py` covers the demo scenarios and their safeguards.
 
 On every push, GitHub Actions runs the tests against PostgreSQL and then SQLite, applies all migrations to a fresh PostgreSQL database, checks that the models and migrations agree (`alembic check`), and validates `docker-compose.yml` with every profile.
 
